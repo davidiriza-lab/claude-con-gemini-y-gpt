@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env*
+STATE.md
+SESIONES.md

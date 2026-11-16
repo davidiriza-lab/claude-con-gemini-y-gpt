@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Genera o edita imágenes con GPT usando tu suscripción de ChatGPT (no la API).
+
+Usa la herramienta de imágenes que trae Codex (image_gen). A Codex se le quita
+OPENAI_API_KEY del entorno para que nunca pueda caer al modo que cobra por API.
+
+Uso:
+  imagen-gpt "prompt" -o salida.png
+  imagen-gpt "prompt" -o salida.jpg --formato vertical
+  imagen-gpt "cambia el fondo a una playa" -o salida.png --ref foto.jpg [--ref otra.png]
+  imagen-gpt "prompt" -o carpeta/variante.png -n 3      (variante-1.png, -2, -3)
+
+Formatos: cuadrado (default), vertical (2:3), horizontal (3:2).
+Si la salida termina en .jpg/.jpeg se convierte. --max 1024 limita el lado largo.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+CODEX = str(Path(__file__).resolve().parent / "codex-sub")
+CODEX_HOME = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+GEN_DIR = CODEX_HOME / "generated_images"
+FORMATOS = {
+    "cuadrado": "square (1:1)",
+    "vertical": "portrait (2:3)",
+    "horizontal": "landscape (3:2)",
+}
+EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def imagenes_de(thread_id: str | None, desde: float) -> list[Path]:
+    """Imágenes de ESTA sesión de Codex (carpeta = thread_id); así varias corridas en paralelo no se cruzan."""
+    if not thread_id or not (GEN_DIR / thread_id).is_dir():
+        return []
+    base = GEN_DIR / thread_id
+    nuevas = [p for p in base.rglob("*") if p.suffix.lower() in EXTS and p.stat().st_mtime >= desde]
+    return sorted(nuevas, key=lambda p: p.stat().st_mtime)
+
+
+def thread_de(salida_json: str) -> str | None:
+    for linea in salida_json.splitlines():
+        try:
+            o = json.loads(linea)
+        except json.JSONDecodeError:
+            continue
+        if o.get("type") == "thread.started":
+            return o.get("thread_id")
+    return None
+
+
+def convertir(origen: Path, destino: Path, max_lado: int | None) -> None:
+    """Copia/convierte con sips (Mac) o ImageMagick (Linux). Sin ninguno, copia tal cual."""
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    a_jpg = destino.suffix.lower() in (".jpg", ".jpeg")
+    if shutil.which("sips"):
+        if a_jpg:
+            subprocess.run(["sips", "-s", "format", "jpeg", "-s", "formatOptions", "90", str(origen),
+                            "--out", str(destino)], check=True, capture_output=True)
+        else:
+            shutil.copy2(origen, destino)
+        if max_lado:
+            subprocess.run(["sips", "-Z", str(max_lado), str(destino)], check=True, capture_output=True)
+        return
+    magick = shutil.which("magick") or shutil.which("convert")
+    if magick and (a_jpg or max_lado):
+        cmd = [magick, str(origen)]
+        if max_lado:
+            cmd += ["-resize", f"{max_lado}x{max_lado}>"]
+        if a_jpg:
+            cmd += ["-quality", "90"]
+        subprocess.run(cmd + [str(destino)], check=True, capture_output=True)
+        return
+    if a_jpg or max_lado:
+        destino = destino.with_suffix(origen.suffix)
+        print(f"(Sin sips ni ImageMagick: guardé el original sin convertir en {destino})")
+    shutil.copy2(origen, destino)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Imágenes con GPT usando tu suscripción de ChatGPT")
+    ap.add_argument("prompt")
+    ap.add_argument("-o", "--salida", required=True)
+    ap.add_argument("--formato", choices=FORMATOS, default="cuadrado")
+    ap.add_argument("--ref", action="append", default=[], help="imagen de referencia o a editar (repetible)")
+    ap.add_argument("-n", type=int, default=1, help="cuántas variantes (máx 4)")
+    ap.add_argument("--max", type=int, default=None, help="lado largo máximo en px (ej. 1024 para web)")
+    a = ap.parse_args()
+
+    n = max(1, min(a.n, 4))
+    for r in a.ref:
+        if not Path(r).is_file():
+            print(f"No existe la referencia: {r}")
+            return 1
+
+    tarea = ("Use the attached image(s) as reference. If the request is an edit, edit the attached image; "
+             "otherwise use them as visual reference. ") if a.ref else ""
+    instruccion = (
+        f"Generate {n} image{'s' if n > 1 else ''} with your BUILT-IN image generation tool (image_gen) ONLY. "
+        "Do NOT run any script, do NOT call any API, do NOT run shell commands, do NOT copy or move files. "
+        f"{tarea}Aspect ratio: {FORMATOS[a.formato]}. "
+        f"{'Each image must be a distinct variation. ' if n > 1 else ''}"
+        "Use the user's description faithfully; keep any text written inside the image exactly as given, "
+        "in the same language. When done, reply with just: OK.\n\n"
+        f"Description:\n{a.prompt}"
+    )
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENAI_")}
+    cmd = [CODEX, "exec", "--json", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check"]
+    for r in a.ref:
+        cmd += ["-i", str(Path(r).resolve())]
+    cmd += ["--", instruccion]  # "--" evita que -i se trague el prompt como otra imagen
+
+    inicio = time.time() - 1
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            res = subprocess.run(cmd, cwd=tmp, env=env, stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            print("Codex tardó más de 15 minutos; lo corté.")
+            return 1
+
+    nuevas = imagenes_de(thread_de(res.stdout), inicio)
+    if not nuevas:
+        print("Codex no generó ninguna imagen.")
+        salida = (res.stdout + res.stderr).strip()
+        print(salida[-1500:])
+        if "login" in salida.lower() or "auth" in salida.lower():
+            print("Parece problema de sesión: entra a Codex con tu cuenta de ChatGPT (`codex-sub login`).")
+        return 1
+
+    destino = Path(a.salida).expanduser()
+    elegidas = nuevas[-n:]
+    for i, origen in enumerate(elegidas, 1):
+        d = destino if len(elegidas) == 1 else destino.with_name(f"{destino.stem}-{i}{destino.suffix}")
+        convertir(origen, d, a.max)
+        print(d.resolve())
+    if len(elegidas) < n:
+        print(f"(Pediste {n}, Codex generó {len(elegidas)}.)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
