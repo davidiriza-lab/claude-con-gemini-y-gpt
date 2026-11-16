@@ -43,6 +43,8 @@ Claude te pregunta qué suscripciones tienes, instala lo necesario, te guía par
 
 También funcionan en la terminal: `imagen-gpt`, `cuota-gpt`, `cuota-gemini`.
 
+Si quieres armar tu propio panel o script, `cuota-gpt --json` y `cuota-gemini --json` dan los mismos datos en JSON (cuánto queda de cada tanque y cuándo se recarga).
+
 ## Cómo funciona (y por qué no te cobran aparte)
 
 | Suscripción | Herramienta oficial | Qué hace |

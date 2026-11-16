@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Muestra cuánto te queda de Gemini (suscripción Google AI Pro/Ultra vía Antigravity CLI), en español.
 
-Uso: cuota-gemini
+Uso: cuota-gemini [--json]
 Lee `agy -p /usage` y lo traduce a barras con tu hora local.
 """
 from __future__ import annotations
@@ -59,6 +59,13 @@ def main() -> int:
         return 1
 
     filas = [l.split("\t") for l in out.strip().splitlines() if l.count("\t") == 3]
+    if "--json" in sys.argv:  # para paneles y scripts: mismo dato, sin dibujo
+        import json
+        ventanas = [{"grupo": GRUPOS.get(g, g), "etiqueta": LIMITES.get(l, l), "queda": int(p.rstrip("%")), "recarga": r}
+                    for g, l, p, r in filas if g in GRUPOS and l in LIMITES]
+        print(json.dumps({"ok": bool(ventanas), "ventanas": ventanas,
+                          "error": None if ventanas else "agy no devolvió la cuota (¿sesión vencida?)"}))
+        return 0 if ventanas else 1
     if not filas:
         print("agy no devolvió la cuota. Si dice que no hay sesión: abre `agy` en una terminal, "
               "entra con tu cuenta de Google y sal con /quit.")
