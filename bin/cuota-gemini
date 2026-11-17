@@ -26,7 +26,10 @@ LIMITES = {
 
 
 def cuando(iso: str) -> str:
-    t = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone()
+    except ValueError:  # si Google cambia el formato de la fecha, se muestra tal cual
+        return iso
     hoy = datetime.now().astimezone().date()
     if t.date() == hoy:
         dia = "hoy"

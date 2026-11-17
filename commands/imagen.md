@@ -31,3 +31,6 @@ falla, ajusta el prompt y repite.
 
 Si falla por cuota (`/cuota-gpt`) o por sesión, avísale al usuario. No caigas a la API de
 OpenAI sin que él lo autorice.
+
+Si Codex rechaza el modelo: `imagen-gpt` ya usa el primero que Codex lista para la cuenta.
+Para forzar otro, pon `IMAGEN_GPT_MODELO=<modelo>` antes del comando.

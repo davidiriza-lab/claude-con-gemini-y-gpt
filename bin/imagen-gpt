@@ -12,6 +12,7 @@ Uso:
 
 Formatos: cuadrado (default), vertical (2:3), horizontal (3:2).
 Si la salida termina en .jpg/.jpeg se convierte. --max 1024 limita el lado largo.
+Usa el primer modelo que Codex lista para tu cuenta; para forzar otro: IMAGEN_GPT_MODELO=<modelo>.
 """
 from __future__ import annotations
 
@@ -56,8 +57,9 @@ def thread_de(salida_json: str) -> str | None:
     return None
 
 
-def convertir(origen: Path, destino: Path, max_lado: int | None) -> None:
-    """Copia/convierte con sips (Mac) o ImageMagick (Linux). Sin ninguno, copia tal cual."""
+def convertir(origen: Path, destino: Path, max_lado: int | None) -> Path:
+    """Copia/convierte con sips (Mac) o ImageMagick (Linux). Sin ninguno, copia tal cual.
+    Devuelve la ruta donde quedó el archivo (puede cambiar de extensión si no se pudo convertir)."""
     destino.parent.mkdir(parents=True, exist_ok=True)
     a_jpg = destino.suffix.lower() in (".jpg", ".jpeg")
     if shutil.which("sips"):
@@ -68,7 +70,7 @@ def convertir(origen: Path, destino: Path, max_lado: int | None) -> None:
             shutil.copy2(origen, destino)
         if max_lado:
             subprocess.run(["sips", "-Z", str(max_lado), str(destino)], check=True, capture_output=True)
-        return
+        return destino
     magick = shutil.which("magick") or shutil.which("convert")
     if magick and (a_jpg or max_lado):
         cmd = [magick, str(origen)]
@@ -77,11 +79,27 @@ def convertir(origen: Path, destino: Path, max_lado: int | None) -> None:
         if a_jpg:
             cmd += ["-quality", "90"]
         subprocess.run(cmd + [str(destino)], check=True, capture_output=True)
-        return
+        return destino
     if a_jpg or max_lado:
         destino = destino.with_suffix(origen.suffix)
         print(f"(Sin sips ni ImageMagick: guardé el original sin convertir en {destino})")
     shutil.copy2(origen, destino)
+    return destino
+
+
+def modelo_de_la_cuenta() -> str | None:
+    """Primer modelo que Codex lista para tu cuenta de ChatGPT (models_cache.json de Codex).
+    Evita que falle cuando config.toml apunta a un modelo que tu plan no incluye.
+    Para forzar otro: IMAGEN_GPT_MODELO=<modelo>. Si no hay lista, Codex usa el suyo."""
+    if os.environ.get("IMAGEN_GPT_MODELO"):
+        return os.environ["IMAGEN_GPT_MODELO"]
+    try:
+        cache = json.loads((CODEX_HOME / "models_cache.json").read_text())
+        visibles = sorted((m for m in cache.get("models", []) if m.get("visibility") == "list"),
+                          key=lambda m: m.get("priority", 99))
+        return visibles[0]["slug"] if visibles else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def main() -> int:
@@ -114,6 +132,9 @@ def main() -> int:
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("OPENAI_")}
     cmd = [CODEX, "exec", "--json", "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check"]
+    modelo = modelo_de_la_cuenta()
+    if modelo:
+        cmd += ["-m", modelo]
     for r in a.ref:
         cmd += ["-i", str(Path(r).resolve())]
     cmd += ["--", instruccion]  # "--" evita que -i se trague el prompt como otra imagen
@@ -140,8 +161,7 @@ def main() -> int:
     elegidas = nuevas[-n:]
     for i, origen in enumerate(elegidas, 1):
         d = destino if len(elegidas) == 1 else destino.with_name(f"{destino.stem}-{i}{destino.suffix}")
-        convertir(origen, d, a.max)
-        print(d.resolve())
+        print(convertir(origen, d, a.max).resolve())
     if len(elegidas) < n:
         print(f"(Pediste {n}, Codex generó {len(elegidas)}.)")
     return 0
